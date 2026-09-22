@@ -1,0 +1,25 @@
+{
+  "name": "starfall-defense",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "星陨防线 - 原创 3D 太空射击游戏 (TypeScript + Vite + Three.js)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "e2e": "node e2e/smoke.mjs"
+  },
+  "dependencies": {
+    "three": "^0.169.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.169.0",
+    "playwright": "^1.63.0",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10",
+    "vitest": "^2.1.4"
+  }
+}
