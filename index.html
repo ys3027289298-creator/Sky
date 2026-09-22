@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>星陨防线</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="hud" class="hidden">
+      <div id="missionPanel"><b>任务</b><span id="missionTitle"></span><span id="missionObjective"></span><span id="missionTimer"></span></div>
+      <div id="eventBanner" class="hidden"></div>
+      <div id="crosshair"><div id="lockBox"><span id="lockText"></span></div></div>
+      <div id="targetInfo"></div>
+      <canvas id="radar" width="190" height="190"></canvas>
+      <div id="statusPanel">
+        <label>生命 <i id="hpText"></i><progress id="hpBar" max="100"></progress></label>
+        <label>护盾 <i id="shieldText"></i><progress id="shieldBar" max="100"></progress></label>
+        <label>装甲 <i id="armorText"></i><progress id="armorBar" max="100"></progress></label>
+        <label>能量 <i id="energyText"></i><progress id="energyBar" max="100"></progress></label>
+        <label>燃料 <i id="fuelText"></i><progress id="fuelBar" max="100"></progress></label>
+        <div id="weaponInfo"></div>
+        <div id="partStatus"></div>
+      </div>
+      <div id="controlsHint">W/S 推进 A/D 平移 鼠标转向 Q/E 翻滚｜左键主炮 右键导弹 Shift 冲刺 空格闪避 R 冷却 F 交互 Tab 任务 C 视角 Esc 暂停</div>
+    </div>
+    <div id="menu" class="screen"></div>
+    <div id="overlay" class="screen hidden"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
