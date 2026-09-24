@@ -3,6 +3,7 @@ import { Enemy } from '../core/enemies';
 import { EventKind, EventManager } from '../core/events';
 import { MISSIONS, MissionManager } from '../core/missions';
 import { purchaseUpgrade, SaveStore } from '../core/storage';
+import { PickupKind, PickupLedger, ResourceState } from '../core/pickups';
 import { Ship } from '../core/ship';
 import { dist } from '../core/types';
 import { TargetingSystem, WeaponSystem, WEAPONS } from '../core/weapons';
@@ -10,12 +11,13 @@ import { SoundFX } from './audio';
 import { GameWorld, toThree } from './world';
 
 type Screen = 'menu' | 'hangar' | 'help' | 'settings' | 'game' | 'pause';
-type Pickup = { kind: 'fuel'|'ammo'|'repair'|'module'; pos: THREE.Vector3; mesh: THREE.Object3D };
+type Pickup = { id: string; kind: PickupKind; pos: THREE.Vector3; mesh: THREE.Object3D };
 
 export class GameApp {
   store = new SaveStore(); save = this.store.load();
   world!: GameWorld; ship!: Ship; weapons!: WeaponSystem; targeting = new TargetingSystem(); missions!: MissionManager; events = new EventManager(); sound = new SoundFX(this.save.settings.volume);
   enemies: Enemy[] = []; pickups: Pickup[] = []; playerShip!: THREE.Group; screen: Screen = 'menu'; missionIndex = 0; practice = false; paused = false; cameraMode: 'chase'|'cockpit' = 'chase';
+  ledger = new PickupLedger(); pickupSeq = 0;
   keys = new Set<string>(); mouse = { x: 0, y: 0 }; stationTime = 75; finalTime = 130; scanned = 0; nodes = 0; towers = 0; core = false; convoyHp = 100; last = 0; fireCooldown = 0;
   el = {
     menu: document.querySelector<HTMLDivElement>('#menu')!, overlay: document.querySelector<HTMLDivElement>('#overlay')!, hud: document.querySelector<HTMLDivElement>('#hud')!, app: document.querySelector<HTMLDivElement>('#app')!,
@@ -75,7 +77,7 @@ export class GameApp {
     this.missionIndex = index; this.save = this.store.load(); this.el.app.innerHTML=''; this.world = new GameWorld(this.el.app);
     this.ship = new Ship(structuredClone(this.save.upgrades)); this.weapons = new WeaponSystem(this.save.upgrades.weapon, this.save.upgrades.missile); this.targeting = new TargetingSystem(); this.missions = new MissionManager(index); this.events = new EventManager();
     if (this.practice) this.ship.repairMaterials = 8;
-    this.enemies=[]; this.pickups=[]; this.scanned=0;this.nodes=0;this.towers=0;this.core=false;this.convoyHp=100;this.stationTime=75;this.finalTime=130;this.playerShip=this.world.makePlayerShip(); this.spawnContent(); this.missions.start(); this.show('game'); this.el.app.querySelector('canvas')?.requestPointerLock?.();
+    this.enemies=[]; this.pickups=[]; this.ledger.clear(); this.scanned=0;this.nodes=0;this.towers=0;this.core=false;this.convoyHp=100;this.stationTime=75;this.finalTime=130;this.playerShip=this.world.makePlayerShip(); this.spawnContent(); this.missions.start(); this.show('game'); this.el.app.querySelector('canvas')?.requestPointerLock?.();
   }
   spawnContent() {
     const sets: Enemy['kind'][][] = [['scout','scout','drone'], ['interceptor','interceptor','gunship','scout'], ['drone','drone','gunship','interceptor'], ['interceptor','gunship','drone','interceptor','command']];
@@ -83,7 +85,7 @@ export class GameApp {
     sets[this.missionIndex].forEach((kind,i) => { const p = centers[this.missionIndex].clone().add(new THREE.Vector3((i-1)*36, (Math.random()-.5)*42, -i*20)); const e = new Enemy(`${kind}-${i}`, kind, {x:p.x,y:p.y,z:p.z}, {x:p.x+35,y:0,z:p.z-30}); this.enemies.push(e); this.world.addEnemyMesh(e); });
     [['repair',new THREE.Vector3(20,-8,-220)],['fuel',new THREE.Vector3(-170,15,-210)],['ammo',new THREE.Vector3(40,35,-245)],['module',new THREE.Vector3(210,10,-185)]].forEach(([kind,p]) => this.addPickup(kind as Pickup['kind'], p as THREE.Vector3));
   }
-  addPickup(kind: Pickup['kind'], pos: THREE.Vector3) { const mesh = new THREE.Mesh(new THREE.OctahedronGeometry(2), new THREE.MeshBasicMaterial({ color: kind==='repair'?0x43ff75:kind==='fuel'?0xffd34a:kind==='ammo'?0x66ccff:0xff70ff })); mesh.position.copy(pos); this.world.scene.add(mesh); this.pickups.push({kind,pos,mesh}); }
+  addPickup(kind: PickupKind, pos: THREE.Vector3) { const mesh = new THREE.Mesh(new THREE.OctahedronGeometry(2), new THREE.MeshBasicMaterial({ color: kind==='repair'?0x43ff75:kind==='fuel'?0xffd34a:kind==='ammo'?0x66ccff:0xff70ff })); mesh.position.copy(pos); this.world.scene.add(mesh); const id=`pickup-${this.pickupSeq++}`; this.ledger.register(id); this.pickups.push({id,kind,pos,mesh}); }
   objective() { return MISSIONS[this.missionIndex].steps[Math.min(this.missions.state.objectiveStep, MISSIONS[this.missionIndex].steps.length-1)]; }
   loop(t: number) { const dt=Math.min(.05,(t-(this.last||t))/1000); this.last=t; if(this.screen==='game'&&!this.paused)this.update(dt); if(this.world)this.world.update(dt); requestAnimationFrame(n=>this.loop(n)); }
 
@@ -155,11 +157,17 @@ export class GameApp {
     if (kind==='convoyReroute') this.convoyHp=Math.max(0,this.convoyHp-4);
   }
 
+  snapshotResources(): ResourceState {
+    return { fuel: this.ship.fuel, missile: this.weapons.ammo.missile, blast: this.weapons.ammo.blast, repairMaterials: this.ship.repairMaterials, points: this.save.points };
+  }
+  applyResources(state: ResourceState) {
+    this.ship.fuel = state.fuel; this.weapons.ammo.missile = state.missile; this.weapons.ammo.blast = state.blast; this.ship.repairMaterials = state.repairMaterials; this.save.points = state.points;
+  }
   updatePickups() {
     this.pickups=this.pickups.filter(p=>{p.mesh.rotation.y+=.03; if(p.pos.distanceTo(toThree(this.ship.pos))>8)return true;
-      if(p.kind==='fuel'||p.kind==='ammo'){this.ship.pickup('fuel');if(p.kind==='ammo'){this.weapons.ammo.missile+=2;this.weapons.ammo.blast+=1;}}
-      if(p.kind==='repair'){this.ship.repairMaterials++;this.ship.repair();}
-      if(p.kind==='module')this.save.points++;
+      const state=this.snapshotResources();
+      const result=this.ledger.settle(p.id,p.kind,state,()=>{this.ship.repairMaterials=state.repairMaterials; const repaired=this.ship.repair(); state.repairMaterials=this.ship.repairMaterials; return repaired;});
+      if(result)this.applyResources(state);
       this.world.scene.remove(p.mesh); return false;
     });
   }

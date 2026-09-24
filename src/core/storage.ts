@@ -14,7 +14,9 @@ export class SaveStore {
   load(): SaveData {
     try {
       const raw = globalThis.localStorage?.getItem(this.key) ?? this.memory[this.key];
-      return raw ? { ...structuredClone(DEFAULT_SAVE), ...JSON.parse(raw), upgrades: { ...DEFAULT_SAVE.upgrades, ...JSON.parse(raw).upgrades } } : structuredClone(DEFAULT_SAVE);
+      if (!raw) return structuredClone(DEFAULT_SAVE);
+      const parsed = JSON.parse(raw);
+      return { ...structuredClone(DEFAULT_SAVE), ...parsed, upgrades: { ...DEFAULT_SAVE.upgrades, ...parsed.upgrades }, settings: { ...DEFAULT_SAVE.settings, ...parsed.settings } };
     } catch { return structuredClone(DEFAULT_SAVE); }
   }
   save(data: SaveData): void {
