@@ -74,11 +74,5 @@ export class Ship {
     (Object.keys(this.parts) as PartKind[]).forEach(p => this.parts[p] = clamp(this.parts[p] + 28, 0, 100));
     return true;
   }
-  pickup(kind: 'fuel' | 'ammo' | 'repair' | 'module'): number {
-    if (kind === 'fuel') this.fuel = clamp(this.fuel + 30, 0, 100);
-    if (kind === 'repair') this.repairMaterials += 1;
-    if (kind === 'module') return 1;
-    return 0;
-  }
   near(a: Vec3, range: number) { return dist(this.pos, a) <= range; }
 }
