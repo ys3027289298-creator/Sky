@@ -44,13 +44,16 @@ export interface LockState { targetId: string | null; progress: number; lostTime
 export class TargetingSystem {
   lock: LockState = { targetId: null, progress: 0, lostTimer: 0 };
   update(candidates: { id: string; visible: boolean; inRange: boolean }[], dt: number, switchTarget = false) {
-    if (switchTarget || !this.lock.targetId) {
-      const visible = candidates.filter(c => c.visible && c.inRange);
-      const next = (switchTarget && this.lock.targetId ? visible.find(c => c.id !== this.lock.targetId) : undefined) ?? visible[0] ?? candidates.find(c => c.inRange);
-      if (next?.id !== this.lock.targetId) this.lock = { targetId: next?.id ?? null, progress: next ? 20 : 0, lostTimer: 0 };
+    const selectable = candidates.filter(c => c.visible && c.inRange);
+    if (switchTarget) {
+      const next = selectable.find(c => c.id !== this.lock.targetId);
+      if (next) this.lock = { targetId: next.id, progress: 20, lostTimer: 0 };
+    } else if (!this.lock.targetId) {
+      const next = selectable[0];
+      if (next) this.lock = { targetId: next.id, progress: 20, lostTimer: 0 };
     }
     const target = candidates.find(c => c.id === this.lock.targetId);
-    if (!target) { this.lock.progress = 0; this.lock.targetId = null; return this.lock; }
+    if (!target) { this.lock = { targetId: null, progress: 0, lostTimer: 0 }; return this.lock; }
     if (target.visible && target.inRange) { this.lock.progress = Math.min(100, this.lock.progress + 42 * dt); this.lock.lostTimer = 0; }
     else { this.lock.lostTimer += dt; this.lock.progress = Math.max(0, this.lock.progress - 35 * dt); if (this.lock.lostTimer > 1.4) this.lock.targetId = null; }
     return this.lock;

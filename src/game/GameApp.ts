@@ -1,10 +1,11 @@
 import * as THREE from 'three';
+import { CombatSession, PendingShot } from '../core/combat';
 import { Enemy } from '../core/enemies';
 import { EventKind, EventManager } from '../core/events';
 import { MISSIONS, MissionManager } from '../core/missions';
 import { purchaseUpgrade, SaveStore } from '../core/storage';
 import { Ship } from '../core/ship';
-import { dist } from '../core/types';
+import { WeaponId, dist } from '../core/types';
 import { TargetingSystem, WeaponSystem, WEAPONS } from '../core/weapons';
 import { SoundFX } from './audio';
 import { GameWorld, toThree } from './world';
@@ -15,6 +16,7 @@ type Pickup = { kind: 'fuel'|'ammo'|'repair'|'module'; pos: THREE.Vector3; mesh:
 export class GameApp {
   store = new SaveStore(); save = this.store.load();
   world!: GameWorld; ship!: Ship; weapons!: WeaponSystem; targeting = new TargetingSystem(); missions!: MissionManager; events = new EventManager(); sound = new SoundFX(this.save.settings.volume);
+  combat = new CombatSession();
   enemies: Enemy[] = []; pickups: Pickup[] = []; playerShip!: THREE.Group; screen: Screen = 'menu'; missionIndex = 0; practice = false; paused = false; cameraMode: 'chase'|'cockpit' = 'chase';
   keys = new Set<string>(); mouse = { x: 0, y: 0 }; stationTime = 75; finalTime = 130; scanned = 0; nodes = 0; towers = 0; core = false; convoyHp = 100; last = 0; fireCooldown = 0;
   el = {
@@ -74,6 +76,7 @@ export class GameApp {
   start(index: number) {
     this.missionIndex = index; this.save = this.store.load(); this.el.app.innerHTML=''; this.world = new GameWorld(this.el.app);
     this.ship = new Ship(structuredClone(this.save.upgrades)); this.weapons = new WeaponSystem(this.save.upgrades.weapon, this.save.upgrades.missile); this.targeting = new TargetingSystem(); this.missions = new MissionManager(index); this.events = new EventManager();
+    this.combat.beginMission();
     if (this.practice) this.ship.repairMaterials = 8;
     this.enemies=[]; this.pickups=[]; this.scanned=0;this.nodes=0;this.towers=0;this.core=false;this.convoyHp=100;this.stationTime=75;this.finalTime=130;this.playerShip=this.world.makePlayerShip(); this.spawnContent(); this.missions.start(); this.show('game'); this.el.app.querySelector('canvas')?.requestPointerLock?.();
   }
@@ -124,25 +127,31 @@ export class GameApp {
     if (this.keys.has('Mouse0')&&this.fireCooldown<=0&&this.weapons.fire(this.weapons.primary,this.ship.fireMultiplier)) {
       const id=this.weapons.primary; this.fireCooldown=1/(WEAPONS[id].rate*this.ship.fireMultiplier); this.fireProjectile(id,lock.targetId);
     }
-    if (this.keys.has('Mouse2')&&this.weapons.fire(this.weapons.secondary,this.ship.fireMultiplier)) this.fireProjectile(this.weapons.secondary,lock.progress>=100?lock.targetId:undefined);
+    if (this.keys.has('Mouse2')) {
+      const id=this.weapons.secondary;
+      const allowed=id==='missile'?this.combat.canLaunchMissile(lock):true;
+      if (allowed&&this.weapons.fire(id,this.ship.fireMultiplier)) this.fireProjectile(id,lock.progress>=100?lock.targetId:undefined);
+    }
   }
 
-  fireProjectile(id:string,targetId?:string|null) {
+  fireProjectile(id:WeaponId,targetId?:string|null) {
+    const targetRef=targetId?this.enemies.find(e=>e.id===targetId&&e.alive)??null:null;
+    if (id==='missile'&&!targetRef) return;
     const dir=this.ship.forward(), mesh=this.world.spawnProjectile(this.ship.pos,dir,targetId??undefined,id==='blast');
     mesh.lookAt(toThree({x:this.ship.pos.x+dir.x,y:this.ship.pos.y+dir.y,z:this.ship.pos.z+dir.z}));
     id==='missile'?this.sound.missile():this.sound.shoot();
-    setTimeout(()=>this.resolveShot(id as never,targetId),id==='missile'?280:70);
+    const shot:PendingShot={token:this.combat.token,weapon:id,targetId:targetId??null,targetRef};
+    setTimeout(()=>this.resolveShot(shot),id==='missile'?280:70);
   }
 
-  resolveShot(id:'twin'|'pulse'|'missile'|'blast',targetId?:string|null) {
-    const spec=WEAPONS[id]; let target=this.enemies.find(e=>e.id===targetId&&e.alive);
-    if (!target) target=this.enemies.filter(e=>e.alive).sort((a,b)=>dist(a.pos,this.ship.pos)-dist(b.pos,this.ship.pos))[0];
-    if (target&&dist(target.pos,this.ship.pos)<=spec.range&&(id==='missile'||this.visible(target.pos))) {
-      const part=target.kind==='command'?(['turret','engine','node'] as const)[Math.floor(Math.random()*3)]:undefined;
-      const killed=target.damage(spec.damage*(1+this.save.upgrades.weapon*.08),part);
-      this.weapons.registerHit(); this.world.explosion(target.pos,killed?0xff5522:0x99ffff,killed?2:.7); this.sound.hit();
-      if (killed) { const mesh=this.world.enemyMeshes.get(target.id); if(mesh)mesh.visible=false; this.addPickup(Math.random()>.5?'ammo':'repair',toThree(target.pos)); }
-    }
+  resolveShot(shot:PendingShot) {
+    const outcome=this.combat.resolveShot(shot,{enemies:this.enemies,shipPos:this.ship.pos,isVisible:pos=>this.visible(pos)});
+    if (!outcome.hit||!outcome.target) return;
+    const target=outcome.target, spec=WEAPONS[shot.weapon];
+    const part=target.kind==='command'?(['turret','engine','node'] as const)[Math.floor(Math.random()*3)]:undefined;
+    const killed=target.damage(spec.damage*(1+this.save.upgrades.weapon*.08),part);
+    this.weapons.registerHit(); this.world.explosion(target.pos,killed?0xff5522:0x99ffff,killed?2:.7); this.sound.hit();
+    if (killed) { const mesh=this.world.enemyMeshes.get(target.id); if(mesh)mesh.visible=false; this.addPickup(Math.random()>.5?'ammo':'repair',toThree(target.pos)); }
   }
 
   randomEvent() {
