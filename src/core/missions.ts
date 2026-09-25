@@ -1,4 +1,5 @@
 import { clamp } from './types';
+import { NavContext, ResolvedWaypoint, currentWaypoint, missionWaypoints, upcomingWaypoints } from './waypoints';
 
 export type MissionStatus = 'briefing' | 'active' | 'success' | 'failed';
 export interface MissionState { index: number; name: string; status: MissionStatus; time: number; objectiveStep: number; progress: number; evacuation: boolean; failReason: string; }
@@ -32,4 +33,10 @@ export class MissionManager {
     if (towersDown && commandDead && evacuated) this.state.status = 'success';
   }
   fail(reason: string) { this.state.status = 'failed'; this.state.failReason = reason; }
+  navContext(extra: NavContext = {}): NavContext {
+    return { status: this.state.status, objectiveStep: this.state.objectiveStep, progress: this.state.progress, evacuation: this.state.evacuation, ...extra };
+  }
+  waypoints(extra: NavContext = {}): ResolvedWaypoint[] { return missionWaypoints(this.state.index, this.navContext(extra)); }
+  currentWaypoint(extra: NavContext = {}): ResolvedWaypoint | null { return currentWaypoint(this.state.index, this.navContext(extra)); }
+  upcomingWaypoints(extra: NavContext = {}): ResolvedWaypoint[] { return upcomingWaypoints(this.state.index, this.navContext(extra)); }
 }

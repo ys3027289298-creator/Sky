@@ -5,6 +5,7 @@ import { MISSIONS, MissionManager } from '../core/missions';
 import { purchaseUpgrade, SaveStore } from '../core/storage';
 import { Ship } from '../core/ship';
 import { dist } from '../core/types';
+import { DIRECTION_LABEL, NAV_STATUS_LABEL, NAV_TOGGLE_CODE, NavContext, NavPanelState, WAYPOINT_KIND_LABEL, buildPanelModel, navCardModel } from '../core/waypoints';
 import { TargetingSystem, WeaponSystem, WEAPONS } from '../core/weapons';
 import { SoundFX } from './audio';
 import { GameWorld, toThree } from './world';
@@ -16,12 +17,14 @@ export class GameApp {
   store = new SaveStore(); save = this.store.load();
   world!: GameWorld; ship!: Ship; weapons!: WeaponSystem; targeting = new TargetingSystem(); missions!: MissionManager; events = new EventManager(); sound = new SoundFX(this.save.settings.volume);
   enemies: Enemy[] = []; pickups: Pickup[] = []; playerShip!: THREE.Group; screen: Screen = 'menu'; missionIndex = 0; practice = false; paused = false; cameraMode: 'chase'|'cockpit' = 'chase';
+  nav = new NavPanelState();
   keys = new Set<string>(); mouse = { x: 0, y: 0 }; stationTime = 75; finalTime = 130; scanned = 0; nodes = 0; towers = 0; core = false; convoyHp = 100; last = 0; fireCooldown = 0;
   el = {
     menu: document.querySelector<HTMLDivElement>('#menu')!, overlay: document.querySelector<HTMLDivElement>('#overlay')!, hud: document.querySelector<HTMLDivElement>('#hud')!, app: document.querySelector<HTMLDivElement>('#app')!,
     missionTitle: document.querySelector('#missionTitle')!, missionObjective: document.querySelector('#missionObjective')!, missionTimer: document.querySelector('#missionTimer')!, event: document.querySelector('#eventBanner')!,
     hp: document.querySelector<HTMLProgressElement>('#hpBar')!, shield: document.querySelector<HTMLProgressElement>('#shieldBar')!, armor: document.querySelector<HTMLProgressElement>('#armorBar')!, energy: document.querySelector<HTMLProgressElement>('#energyBar')!, fuel: document.querySelector<HTMLProgressElement>('#fuelBar')!,
     hpText: document.querySelector('#hpText')!, shieldText: document.querySelector('#shieldText')!, armorText: document.querySelector('#armorText')!, energyText: document.querySelector('#energyText')!, fuelText: document.querySelector('#fuelText')!, weapon: document.querySelector('#weaponInfo')!, parts: document.querySelector('#partStatus')!, target: document.querySelector('#targetInfo')!, lockText: document.querySelector('#lockText')!, radar: document.querySelector<HTMLCanvasElement>('#radar')!
+    , navCard: document.querySelector<HTMLDivElement>('#navCard')!, navName: document.querySelector('#navName')!, navKind: document.querySelector('#navKind')!, navDist: document.querySelector('#navDist')!, navDir: document.querySelector('#navDir')!, navStatus: document.querySelector('#navStatus')!, navPanel: document.querySelector<HTMLCanvasElement>('#navPanel')!
   };
 
   constructor() {
@@ -37,6 +40,7 @@ export class GameApp {
     if (down && e.code === 'Escape') return this.screen === 'game' ? this.show('pause') : this.screen === 'pause' ? this.show('game') : undefined;
     if (this.screen !== 'game') { if (down) this.keys.add(e.code); return; }
     if (down && e.code === 'KeyC') this.cameraMode = this.cameraMode === 'chase' ? 'cockpit' : 'chase';
+    if (down && e.code === NAV_TOGGLE_CODE) this.toggleNavPanel();
     if (down && e.code === 'KeyR') this.weapons?.cool();
     if (down && ['Digit1','Digit2','Digit3','Digit4'].includes(e.code)) {
       const ids = ['twin','pulse','missile','blast'] as const;
@@ -74,6 +78,7 @@ export class GameApp {
   start(index: number) {
     this.missionIndex = index; this.save = this.store.load(); this.el.app.innerHTML=''; this.world = new GameWorld(this.el.app);
     this.ship = new Ship(structuredClone(this.save.upgrades)); this.weapons = new WeaponSystem(this.save.upgrades.weapon, this.save.upgrades.missile); this.targeting = new TargetingSystem(); this.missions = new MissionManager(index); this.events = new EventManager();
+    this.nav.reset(); this.el.navPanel.classList.add('hidden'); this.el.navCard.classList.remove('hidden');
     if (this.practice) this.ship.repairMaterials = 8;
     this.enemies=[]; this.pickups=[]; this.scanned=0;this.nodes=0;this.towers=0;this.core=false;this.convoyHp=100;this.stationTime=75;this.finalTime=130;this.playerShip=this.world.makePlayerShip(); this.spawnContent(); this.missions.start(); this.show('game'); this.el.app.querySelector('canvas')?.requestPointerLock?.();
   }
@@ -85,6 +90,53 @@ export class GameApp {
   }
   addPickup(kind: Pickup['kind'], pos: THREE.Vector3) { const mesh = new THREE.Mesh(new THREE.OctahedronGeometry(2), new THREE.MeshBasicMaterial({ color: kind==='repair'?0x43ff75:kind==='fuel'?0xffd34a:kind==='ammo'?0x66ccff:0xff70ff })); mesh.position.copy(pos); this.world.scene.add(mesh); this.pickups.push({kind,pos,mesh}); }
   objective() { return MISSIONS[this.missionIndex].steps[Math.min(this.missions.state.objectiveStep, MISSIONS[this.missionIndex].steps.length-1)]; }
+
+  toggleNavPanel() { this.el.navPanel.classList.toggle('hidden', !this.nav.toggle()); }
+
+  navCtx(): NavContext {
+    const command = this.enemies.find(e => e.kind === 'command');
+    return {
+      nodesDown: this.nodes, coreTaken: this.core, towersDown: this.towers,
+      commandAlive: !!command?.alive, commandPos: command?.alive ? command.pos : undefined,
+      enemiesAlive: this.enemies.filter(e => e.alive).length,
+      timeLeft: this.missionIndex === 2 ? this.stationTime : this.missionIndex === 3 ? this.finalTime : Infinity
+    };
+  }
+
+  updateNav() {
+    const model = navCardModel(this.missionIndex, this.missions.navContext(this.navCtx()), this.ship.pos, this.ship.yaw);
+    this.el.navCard.classList.toggle('hidden', !model.visible);
+    if (model.visible) {
+      this.el.navName.textContent = model.label;
+      this.el.navKind.textContent = model.kind ? `类型 ${WAYPOINT_KIND_LABEL[model.kind]}` : '';
+      this.el.navDist.textContent = `距离 ${model.distance.toFixed(0)}m`;
+      this.el.navDir.textContent = `方向 ${DIRECTION_LABEL[model.direction]}`;
+      this.el.navStatus.textContent = NAV_STATUS_LABEL[model.status];
+    }
+    if (this.nav.open) this.drawNavPanel();
+  }
+
+  drawNavPanel() {
+    const c = this.el.navPanel.getContext('2d'); if (!c) return;
+    const size = 260, center = size / 2, radius = 118;
+    c.clearRect(0, 0, size, size);
+    c.fillStyle = 'rgba(2,12,22,.85)'; c.fillRect(0, 0, size, size);
+    c.strokeStyle = '#3f9dc4'; c.beginPath(); c.arc(center, center, radius, 0, Math.PI * 2); c.stroke();
+    const waypoints = this.missions.waypoints(this.navCtx());
+    const blips = buildPanelModel(this.ship.pos, this.ship.yaw, waypoints,
+      this.enemies.filter(e => e.alive).map(e => ({ id: e.id, pos: e.pos })),
+      this.pickups.map((p, i) => ({ id: `pickup-${i}`, pos: { x: p.pos.x, y: p.pos.y, z: p.pos.z } })), radius);
+    for (const b of blips) {
+      const x = center + b.point.x, y = center + b.point.y;
+      if (b.role === 'waypoint') {
+        c.fillStyle = '#5cecff'; c.beginPath(); c.moveTo(x, y - 6); c.lineTo(x + 6, y); c.lineTo(x, y + 6); c.lineTo(x - 6, y); c.closePath(); c.fill();
+        if (b.point.clamped) { c.strokeStyle = '#5cecff'; c.beginPath(); c.arc(x, y, 9, 0, Math.PI * 2); c.stroke(); }
+      } else if (b.role === 'enemy') { c.fillStyle = '#ff5555'; c.beginPath(); c.arc(x, y, 3, 0, Math.PI * 2); c.fill(); }
+      else { c.fillStyle = '#43ff75'; c.fillRect(x - 2, y - 2, 4, 4); }
+    }
+    c.fillStyle = '#fff'; c.beginPath(); c.moveTo(center, center - 7); c.lineTo(center + 5, center + 6); c.lineTo(center - 5, center + 6); c.closePath(); c.fill();
+  }
+
   loop(t: number) { const dt=Math.min(.05,(t-(this.last||t))/1000); this.last=t; if(this.screen==='game'&&!this.paused)this.update(dt); if(this.world)this.world.update(dt); requestAnimationFrame(n=>this.loop(n)); }
 
   update(dt: number) {
@@ -213,11 +265,12 @@ export class GameApp {
     const banner=this.events.events.find(e=>!e.resolved&&(!e.active||e.countdown>-2));
     this.el.event.textContent=banner?`${banner.name}｜${banner.active?'事件正在影响战场':`倒计时 ${Math.max(0,banner.countdown).toFixed(1)}s`}`:'';
     this.el.event.classList.toggle('hidden',!banner);
+    this.updateNav();
     this.updateRadar();
   }
 
   updateRadar() {
-    const c=this.el.radar.getContext('2d')!; c.clearRect(0,0,190,190); c.fillStyle='rgba(0,18,30,.78)';c.beginPath();c.arc(95,95,88,0,Math.PI*2);c.fill();c.strokeStyle='#5cecff';c.stroke();
+    const c=this.el.radar.getContext('2d'); if(!c)return; c.clearRect(0,0,190,190); c.fillStyle='rgba(0,18,30,.78)';c.beginPath();c.arc(95,95,88,0,Math.PI*2);c.fill();c.strokeStyle='#5cecff';c.stroke();
     c.fillStyle='#fff';c.beginPath();c.arc(95,95,3,0,Math.PI*2);c.fill();
     for(const e of this.enemies.filter(e=>e.alive)){const dx=e.pos.x-this.ship.pos.x,dz=e.pos.z-this.ship.pos.z,d=Math.hypot(dx,dz),n=Math.min(80,d/4);c.fillStyle=e.kind==='command'?'#ff3c9e':'#ff5555';c.beginPath();c.arc(95+dx/d*n,95+dz/d*n,e.kind==='command'?5:3,0,Math.PI*2);c.fill();}
     for(const p of this.pickups){c.fillStyle='#43ff75';c.fillRect(93+(p.pos.x-this.ship.pos.x)/4,93+(p.pos.z-this.ship.pos.z)/4,4,4);}
@@ -225,6 +278,7 @@ export class GameApp {
 
   finish(success:boolean,reason:string) {
     if(this.screen!=='game')return;
+    this.nav.reset(); this.el.navPanel.classList.add('hidden'); this.el.navCard.classList.add('hidden');
     const kills=this.enemies.filter(e=>!e.alive).length, reward=success?80+kills*20+this.missionIndex*40:25+kills*10;
     if(success){this.save.resources+=reward;this.save.points+=1+this.missionIndex;this.save.unlockedMission=Math.max(this.save.unlockedMission,Math.min(3,this.missionIndex+1));this.store.save(this.save);}
     this.show('pause');
