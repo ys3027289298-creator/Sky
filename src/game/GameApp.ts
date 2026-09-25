@@ -5,6 +5,7 @@ import { MISSIONS, MissionManager } from '../core/missions';
 import { purchaseUpgrade, SaveStore } from '../core/storage';
 import { Ship } from '../core/ship';
 import { dist } from '../core/types';
+import { DIRECTION_LABELS, NavPanelState, WAYPOINT_KIND_LABELS, Waypoint, WaypointFlags, distanceTo, projectToPanel, relativeDirection, waypointStatus } from '../core/waypoints';
 import { TargetingSystem, WeaponSystem, WEAPONS } from '../core/weapons';
 import { SoundFX } from './audio';
 import { GameWorld, toThree } from './world';
@@ -16,12 +17,14 @@ export class GameApp {
   store = new SaveStore(); save = this.store.load();
   world!: GameWorld; ship!: Ship; weapons!: WeaponSystem; targeting = new TargetingSystem(); missions!: MissionManager; events = new EventManager(); sound = new SoundFX(this.save.settings.volume);
   enemies: Enemy[] = []; pickups: Pickup[] = []; playerShip!: THREE.Group; screen: Screen = 'menu'; missionIndex = 0; practice = false; paused = false; cameraMode: 'chase'|'cockpit' = 'chase';
+  nav = new NavPanelState();
   keys = new Set<string>(); mouse = { x: 0, y: 0 }; stationTime = 75; finalTime = 130; scanned = 0; nodes = 0; towers = 0; core = false; convoyHp = 100; last = 0; fireCooldown = 0;
   el = {
     menu: document.querySelector<HTMLDivElement>('#menu')!, overlay: document.querySelector<HTMLDivElement>('#overlay')!, hud: document.querySelector<HTMLDivElement>('#hud')!, app: document.querySelector<HTMLDivElement>('#app')!,
     missionTitle: document.querySelector('#missionTitle')!, missionObjective: document.querySelector('#missionObjective')!, missionTimer: document.querySelector('#missionTimer')!, event: document.querySelector('#eventBanner')!,
     hp: document.querySelector<HTMLProgressElement>('#hpBar')!, shield: document.querySelector<HTMLProgressElement>('#shieldBar')!, armor: document.querySelector<HTMLProgressElement>('#armorBar')!, energy: document.querySelector<HTMLProgressElement>('#energyBar')!, fuel: document.querySelector<HTMLProgressElement>('#fuelBar')!,
     hpText: document.querySelector('#hpText')!, shieldText: document.querySelector('#shieldText')!, armorText: document.querySelector('#armorText')!, energyText: document.querySelector('#energyText')!, fuelText: document.querySelector('#fuelText')!, weapon: document.querySelector('#weaponInfo')!, parts: document.querySelector('#partStatus')!, target: document.querySelector('#targetInfo')!, lockText: document.querySelector('#lockText')!, radar: document.querySelector<HTMLCanvasElement>('#radar')!
+    , navCard: document.querySelector('#navCard')!, navName: document.querySelector('#navName')!, navKind: document.querySelector('#navKind')!, navDist: document.querySelector('#navDist')!, navDir: document.querySelector('#navDir')!, navState: document.querySelector('#navState')!, navPanel: document.querySelector<HTMLCanvasElement>('#navPanel')!
   };
 
   constructor() {
@@ -37,6 +40,7 @@ export class GameApp {
     if (down && e.code === 'Escape') return this.screen === 'game' ? this.show('pause') : this.screen === 'pause' ? this.show('game') : undefined;
     if (this.screen !== 'game') { if (down) this.keys.add(e.code); return; }
     if (down && e.code === 'KeyC') this.cameraMode = this.cameraMode === 'chase' ? 'cockpit' : 'chase';
+    if (down && e.code === 'KeyN') { this.nav.toggle(); this.updateNav(); }
     if (down && e.code === 'KeyR') this.weapons?.cool();
     if (down && ['Digit1','Digit2','Digit3','Digit4'].includes(e.code)) {
       const ids = ['twin','pulse','missile','blast'] as const;
@@ -49,6 +53,7 @@ export class GameApp {
 
   show(screen: Screen) {
     this.screen = screen; this.paused = screen === 'pause';
+    if (screen !== 'game') { this.el.navCard.classList.add('hidden'); this.el.navPanel.classList.add('hidden'); }
     this.el.hud.classList.toggle('hidden', screen !== 'game'); this.el.menu.classList.toggle('hidden', screen !== 'menu');
     this.el.overlay.classList.toggle('hidden', !['pause','hangar','help','settings'].includes(screen));
     if (screen === 'menu') this.menu(); if (screen === 'hangar') this.hangar(); if (screen === 'help') this.help(); if (screen === 'settings') this.settings(); if (screen === 'pause') this.pauseMenu();
@@ -73,6 +78,7 @@ export class GameApp {
 
   start(index: number) {
     this.missionIndex = index; this.save = this.store.load(); this.el.app.innerHTML=''; this.world = new GameWorld(this.el.app);
+    this.nav.reset();
     this.ship = new Ship(structuredClone(this.save.upgrades)); this.weapons = new WeaponSystem(this.save.upgrades.weapon, this.save.upgrades.missile); this.targeting = new TargetingSystem(); this.missions = new MissionManager(index); this.events = new EventManager();
     if (this.practice) this.ship.repairMaterials = 8;
     this.enemies=[]; this.pickups=[]; this.scanned=0;this.nodes=0;this.towers=0;this.core=false;this.convoyHp=100;this.stationTime=75;this.finalTime=130;this.playerShip=this.world.makePlayerShip(); this.spawnContent(); this.missions.start(); this.show('game'); this.el.app.querySelector('canvas')?.requestPointerLock?.();
@@ -213,7 +219,49 @@ export class GameApp {
     const banner=this.events.events.find(e=>!e.resolved&&(!e.active||e.countdown>-2));
     this.el.event.textContent=banner?`${banner.name}｜${banner.active?'事件正在影响战场':`倒计时 ${Math.max(0,banner.countdown).toFixed(1)}s`}`:'';
     this.el.event.classList.toggle('hidden',!banner);
+    this.updateNav();
     this.updateRadar();
+  }
+
+  navFlags(): WaypointFlags {
+    const command=this.enemies.find(e=>e.kind==='command');
+    return { scanned:this.scanned, nodes:this.nodes, towers:this.towers, core:this.core, commandDead:this.missionIndex===3&&!!command&&!command.alive };
+  }
+
+  updateNav() {
+    if(!this.missions||this.screen!=='game')return;
+    const wp=this.missions.currentWaypoint(this.navFlags());
+    this.el.navCard.classList.toggle('hidden',!wp);
+    if(wp){
+      const d=distanceTo(this.ship.pos,wp.position), dir=relativeDirection(this.ship.pos,this.ship.yaw,wp.position);
+      this.el.navName.textContent=wp.label;
+      this.el.navKind.textContent=`类型 ${WAYPOINT_KIND_LABELS[wp.kind]}`;
+      this.el.navDist.textContent=`距离 ${d.toFixed(0)}m`;
+      this.el.navDir.textContent=`方向 ${DIRECTION_LABELS[dir]}`;
+      this.el.navState.textContent=waypointStatus(wp);
+    }
+    const panelVisible=this.nav.open&&!!wp;
+    this.el.navPanel.classList.toggle('hidden',!panelVisible);
+    if(panelVisible)this.drawNavPanel(wp);
+  }
+
+  drawNavPanel(wp:Waypoint|null) {
+    const c=this.el.navPanel.getContext('2d'); if(!c)return;
+    const half=100,range=320,cx=110,cy=110;
+    c.clearRect(0,0,220,220); c.fillStyle='rgba(2,12,22,.85)'; c.fillRect(0,0,220,220);
+    c.strokeStyle='#2e7292'; c.strokeRect(8,8,204,204);
+    c.fillStyle='#fff'; c.beginPath(); c.moveTo(cx,cy-6); c.lineTo(cx-5,cy+5); c.lineTo(cx+5,cy+5); c.closePath(); c.fill();
+    const plot=(pos:{x:number;y:number;z:number},color:string,size:number,diamond=false)=>{
+      const p=projectToPanel(this.ship.pos,this.ship.yaw,pos,half,range); if(!p.valid)return;
+      const x=cx+p.x,y=cy+p.y; c.fillStyle=color;
+      if(diamond){c.beginPath();c.moveTo(x,y-size);c.lineTo(x+size,y);c.lineTo(x,y+size);c.lineTo(x-size,y);c.closePath();c.fill();}
+      else{c.beginPath();c.arc(x,y,size,0,Math.PI*2);c.fill();}
+      if(p.clamped){c.strokeStyle=color;c.beginPath();c.arc(x,y,size+3,0,Math.PI*2);c.stroke();}
+    };
+    for(const e of this.enemies.filter(e=>e.alive))plot(e.pos,e.kind==='command'?'#ff3c9e':'#ff5555',e.kind==='command'?4:2.5);
+    for(const p of this.pickups)plot(p.pos,'#43ff75',2.5);
+    for(const next of this.missions.nextWaypoints(this.navFlags()))plot(next.position,'#4aa8c8',4,true);
+    if(wp)plot(wp.position,'#ffd34a',6,true);
   }
 
   updateRadar() {

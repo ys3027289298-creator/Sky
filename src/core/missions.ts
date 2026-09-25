@@ -1,4 +1,5 @@
 import { clamp } from './types';
+import { Waypoint, WaypointFlags, resolveWaypoints } from './waypoints';
 
 export type MissionStatus = 'briefing' | 'active' | 'success' | 'failed';
 export interface MissionState { index: number; name: string; status: MissionStatus; time: number; objectiveStep: number; progress: number; evacuation: boolean; failReason: string; }
@@ -32,4 +33,11 @@ export class MissionManager {
     if (towersDown && commandDead && evacuated) this.state.status = 'success';
   }
   fail(reason: string) { this.state.status = 'failed'; this.state.failReason = reason; }
+  waypoints(flags: WaypointFlags): Waypoint[] { return resolveWaypoints(this.state, flags); }
+  currentWaypoint(flags: WaypointFlags): Waypoint | null { return this.waypoints(flags).find(w => w.active) ?? null; }
+  nextWaypoints(flags: WaypointFlags): Waypoint[] {
+    const all = this.waypoints(flags);
+    const current = all.findIndex(w => w.active);
+    return current < 0 ? [] : all.slice(current + 1).filter(w => !w.completed);
+  }
 }
