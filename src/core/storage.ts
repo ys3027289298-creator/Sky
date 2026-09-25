@@ -1,5 +1,7 @@
+import { appendRunRecord, normalizeHistory, RunRecord, SAVE_SCHEMA_VERSION } from './history';
+
 export interface UpgradeLevels { engine: number; shield: number; armor: number; weapon: number; radar: number; missile: number; }
-export interface SaveData { unlockedMission: number; resources: number; points: number; upgrades: UpgradeLevels; settings: { mouseSensitivity: number; volume: number; practice: boolean }; }
+export interface SaveData { unlockedMission: number; resources: number; points: number; upgrades: UpgradeLevels; settings: { mouseSensitivity: number; volume: number; practice: boolean }; schemaVersion?: number; history?: RunRecord[]; }
 
 export const DEFAULT_SAVE: SaveData = {
   unlockedMission: 0,
@@ -14,7 +16,18 @@ export class SaveStore {
   load(): SaveData {
     try {
       const raw = globalThis.localStorage?.getItem(this.key) ?? this.memory[this.key];
-      return raw ? { ...structuredClone(DEFAULT_SAVE), ...JSON.parse(raw), upgrades: { ...DEFAULT_SAVE.upgrades, ...JSON.parse(raw).upgrades } } : structuredClone(DEFAULT_SAVE);
+      if (!raw) return structuredClone(DEFAULT_SAVE);
+      const parsed = JSON.parse(raw);
+      const src = parsed && typeof parsed === 'object' ? parsed : {};
+      const base = structuredClone(DEFAULT_SAVE);
+      return {
+        ...base,
+        ...src,
+        upgrades: { ...base.upgrades, ...(src.upgrades ?? {}) },
+        settings: { ...base.settings, ...(src.settings ?? {}) },
+        schemaVersion: SAVE_SCHEMA_VERSION,
+        history: normalizeHistory(src.history)
+      };
     } catch { return structuredClone(DEFAULT_SAVE); }
   }
   save(data: SaveData): void {
@@ -23,6 +36,19 @@ export class SaveStore {
     globalThis.localStorage?.setItem(this.key, raw);
   }
   reset(): SaveData { const data = structuredClone(DEFAULT_SAVE); this.save(data); return data; }
+  appendRun(record: RunRecord): SaveData {
+    const data = this.load();
+    data.history = appendRunRecord(data.history, record);
+    data.schemaVersion = SAVE_SCHEMA_VERSION;
+    this.save(data);
+    return data;
+  }
+  clearHistory(): SaveData {
+    const data = this.load();
+    data.history = [];
+    this.save(data);
+    return data;
+  }
 }
 
 export function purchaseUpgrade(data: SaveData, kind: keyof UpgradeLevels): SaveData {

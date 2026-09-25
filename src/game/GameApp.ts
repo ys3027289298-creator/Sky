@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Enemy } from '../core/enemies';
 import { EventKind, EventManager } from '../core/events';
+import { RunRecord } from '../core/history';
 import { MISSIONS, MissionManager } from '../core/missions';
 import { purchaseUpgrade, SaveStore } from '../core/storage';
 import { Ship } from '../core/ship';
@@ -9,7 +10,7 @@ import { TargetingSystem, WeaponSystem, WEAPONS } from '../core/weapons';
 import { SoundFX } from './audio';
 import { GameWorld, toThree } from './world';
 
-type Screen = 'menu' | 'hangar' | 'help' | 'settings' | 'game' | 'pause';
+type Screen = 'menu' | 'hangar' | 'help' | 'settings' | 'game' | 'pause' | 'records';
 type Pickup = { kind: 'fuel'|'ammo'|'repair'|'module'; pos: THREE.Vector3; mesh: THREE.Object3D };
 
 export class GameApp {
@@ -17,6 +18,7 @@ export class GameApp {
   world!: GameWorld; ship!: Ship; weapons!: WeaponSystem; targeting = new TargetingSystem(); missions!: MissionManager; events = new EventManager(); sound = new SoundFX(this.save.settings.volume);
   enemies: Enemy[] = []; pickups: Pickup[] = []; playerShip!: THREE.Group; screen: Screen = 'menu'; missionIndex = 0; practice = false; paused = false; cameraMode: 'chase'|'cockpit' = 'chase';
   keys = new Set<string>(); mouse = { x: 0, y: 0 }; stationTime = 75; finalTime = 130; scanned = 0; nodes = 0; towers = 0; core = false; convoyHp = 100; last = 0; fireCooldown = 0;
+  runId = ''; runStartedAt = 0; runRecorded = false; recordFilter = { mission: 'all', status: 'all' };
   el = {
     menu: document.querySelector<HTMLDivElement>('#menu')!, overlay: document.querySelector<HTMLDivElement>('#overlay')!, hud: document.querySelector<HTMLDivElement>('#hud')!, app: document.querySelector<HTMLDivElement>('#app')!,
     missionTitle: document.querySelector('#missionTitle')!, missionObjective: document.querySelector('#missionObjective')!, missionTimer: document.querySelector('#missionTimer')!, event: document.querySelector('#eventBanner')!,
@@ -50,15 +52,15 @@ export class GameApp {
   show(screen: Screen) {
     this.screen = screen; this.paused = screen === 'pause';
     this.el.hud.classList.toggle('hidden', screen !== 'game'); this.el.menu.classList.toggle('hidden', screen !== 'menu');
-    this.el.overlay.classList.toggle('hidden', !['pause','hangar','help','settings'].includes(screen));
-    if (screen === 'menu') this.menu(); if (screen === 'hangar') this.hangar(); if (screen === 'help') this.help(); if (screen === 'settings') this.settings(); if (screen === 'pause') this.pauseMenu();
+    this.el.overlay.classList.toggle('hidden', !['pause','hangar','help','settings','records'].includes(screen));
+    if (screen === 'menu') this.menu(); if (screen === 'hangar') this.hangar(); if (screen === 'help') this.help(); if (screen === 'settings') this.settings(); if (screen === 'pause') this.pauseMenu(); if (screen === 'records') this.records();
   }
   showMenu() { this.show('menu'); }
   menu() {
-    this.el.menu.innerHTML = `<h1>星陨防线</h1><p>侦察、护航、夺核、击破指挥舰。推荐流程 10–15 分钟。</p><button data-a="continue">开始任务 / 继续第 ${this.save.unlockedMission + 1} 关</button><button data-a="new">完整流程</button><button data-a="practice">简单练习</button><button data-a="hangar">飞船改装</button><button data-a="help">操作说明</button><button data-a="settings">设置</button><p>资源 ${this.save.resources}｜改装点 ${this.save.points}｜解锁 ${this.save.unlockedMission + 1}/4</p>`;
+    this.el.menu.innerHTML = `<h1>星陨防线</h1><p>侦察、护航、夺核、击破指挥舰。推荐流程 10–15 分钟。</p><button data-a="continue">开始任务 / 继续第 ${this.save.unlockedMission + 1} 关</button><button data-a="new">完整流程</button><button data-a="practice">简单练习</button><button data-a="hangar">飞船改装</button><button data-a="records">任务战绩</button><button data-a="help">操作说明</button><button data-a="settings">设置</button><p>资源 ${this.save.resources}｜改装点 ${this.save.points}｜解锁 ${this.save.unlockedMission + 1}/4</p>`;
     this.el.menu.querySelectorAll<HTMLButtonElement>('button').forEach(b => b.onclick = () => {
       const a = b.dataset.a; if (a === 'continue') this.start(this.save.unlockedMission); if (a === 'new') this.start(0); if (a === 'practice') { this.practice = true; this.start(0); }
-      if (a === 'hangar') this.show('hangar'); if (a === 'help') this.show('help'); if (a === 'settings') this.show('settings');
+      if (a === 'hangar') this.show('hangar'); if (a === 'records') this.show('records'); if (a === 'help') this.show('help'); if (a === 'settings') this.show('settings');
     });
   }
   hangar() {
@@ -71,8 +73,91 @@ export class GameApp {
   settings() { this.el.overlay.innerHTML = `<h2>设置</h2><label>鼠标灵敏度 <input id=sens type=range min=.5 max=2 step=.1 value=${this.save.settings.mouseSensitivity}></label><label>音量 <input id=vol type=range min=0 max=1 step=.05 value=${this.save.settings.volume}></label><button id=wipe>清除存档</button><button data-a=menu>返回</button>`; const sens=this.el.overlay.querySelector<HTMLInputElement>('#sens')!,vol=this.el.overlay.querySelector<HTMLInputElement>('#vol')!; sens.oninput=()=>{this.save.settings.mouseSensitivity=+sens.value;this.store.save(this.save)};vol.oninput=()=>{this.save.settings.volume=+vol.value;this.sound.volume=+vol.value;this.store.save(this.save)};this.el.overlay.querySelector<HTMLElement>('#wipe')!.onclick=()=>{this.save=this.store.reset();this.settings()};this.el.overlay.querySelector<HTMLElement>('[data-a=menu]')!.onclick=()=>this.showMenu(); }
   pauseMenu() { this.el.overlay.innerHTML = `<h2>任务暂停</h2><button data-a=resume>继续任务</button><button data-a=restart>重新开始任务</button><button data-a=menu>快速返回主菜单</button>`; this.el.overlay.querySelector<HTMLElement>('[data-a=resume]')!.onclick=()=>this.show('game'); this.el.overlay.querySelector<HTMLElement>('[data-a=restart]')!.onclick=()=>this.start(this.missionIndex); this.el.overlay.querySelector<HTMLElement>('[data-a=menu]')!.onclick=()=>this.showMenu(); }
 
+  tag<K extends keyof HTMLElementTagNameMap>(name: K, className = '', text?: string): HTMLElementTagNameMap[K] {
+    const node = document.createElement(name);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  records() {
+    const o = this.el.overlay; o.innerHTML = '';
+    o.append(this.tag('h2', '', '任务战绩'));
+    const filters = this.tag('div', 'record-filters');
+    const missionSel = this.tag('select'); missionSel.id = 'recordMissionFilter';
+    const statusSel = this.tag('select'); statusSel.id = 'recordStatusFilter';
+    const option = (sel: HTMLSelectElement, value: string, label: string) => { const opt = document.createElement('option'); opt.value = value; opt.textContent = label; sel.append(opt); };
+    option(missionSel, 'all', '全部任务');
+    MISSIONS.forEach((m, i) => option(missionSel, String(i), `${i + 1}. ${m.name}`));
+    option(statusSel, 'all', '全部结果'); option(statusSel, 'success', '仅成功'); option(statusSel, 'failed', '仅失败');
+    missionSel.value = this.recordFilter.mission; statusSel.value = this.recordFilter.status;
+    missionSel.onchange = () => { this.recordFilter.mission = missionSel.value; this.records(); };
+    statusSel.onchange = () => { this.recordFilter.status = statusSel.value; this.records(); };
+    filters.append(missionSel, statusSel); o.append(filters);
+    const history = this.save.history ?? [];
+    const list = this.tag('div', 'record-list'); list.id = 'recordList';
+    if (!history.length) {
+      list.append(this.tag('p', 'record-empty', '暂无任务战绩，完成或失败一局任务后会自动生成记录。'));
+    } else {
+      const filtered = history.filter(r =>
+        (this.recordFilter.mission === 'all' || r.missionIndex === Number(this.recordFilter.mission)) &&
+        (this.recordFilter.status === 'all' || (this.recordFilter.status === 'success') === r.success));
+      if (!filtered.length) list.append(this.tag('p', 'record-empty', '没有符合当前筛选条件的记录。'));
+      for (const r of filtered) {
+        const row = this.tag('button', 'record-row'); row.type = 'button';
+        row.append(
+          this.tag('span', 'record-name', `${r.missionIndex + 1}. ${r.missionName}`),
+          this.tag('span', r.success ? 'win' : 'lose', r.success ? '成功' : '失败'),
+          this.tag('span', '', new Date(r.finishedAt).toLocaleString()),
+          this.tag('span', '', `用时 ${r.duration.toFixed(1)}s`),
+          this.tag('span', '', `击毁 ${r.kills}`),
+          this.tag('span', '', `命中率 ${(r.accuracy * 100).toFixed(0)}%`),
+          this.tag('span', '', `奖励 ${r.reward}`)
+        );
+        row.onclick = () => this.recordDetail(r.id);
+        list.append(row);
+      }
+    }
+    o.append(list);
+    const actions = this.tag('div', 'record-actions');
+    const clear = this.tag('button', '', '清空战绩'); clear.id = 'clearRecords';
+    clear.onclick = () => {
+      if (!window.confirm('确定清空全部任务战绩吗？仅删除战绩记录，解锁、资源、改装和设置不受影响。')) return;
+      const data = this.store.clearHistory();
+      this.save = { ...this.save, history: data.history };
+      this.records();
+    };
+    const back = this.tag('button', '', '返回'); back.onclick = () => this.showMenu();
+    actions.append(clear, back); o.append(actions);
+  }
+
+  recordDetail(id: string) {
+    const record = (this.save.history ?? []).find(r => r.id === id);
+    if (!record) return this.records();
+    const o = this.el.overlay; o.innerHTML = '';
+    o.append(this.tag('h2', record.success ? 'win' : 'lose', `${record.missionIndex + 1}. ${record.missionName}｜${record.success ? '任务成功' : '任务失败'}`));
+    o.append(this.tag('p', 'record-reason', record.reason));
+    const stats = this.tag('ul', 'record-detail');
+    [
+      `结束时间：${new Date(record.finishedAt).toLocaleString()}`,
+      `用时：${record.duration.toFixed(1)} 秒`,
+      `击毁数量：${record.kills}`,
+      `射击 ${record.shots} 发｜命中 ${record.hits} 发｜命中率 ${(record.accuracy * 100).toFixed(0)}%`,
+      `获得资源：${record.reward}`
+    ].forEach(text => stats.append(this.tag('li', '', text)));
+    o.append(stats);
+    const names: Record<string, string> = { engine: '引擎', shield: '护盾', armor: '装甲', weapon: '武器', radar: '雷达', missile: '导弹舱' };
+    const ups = this.tag('ul', 'record-upgrades');
+    ups.append(this.tag('li', 'record-upgrades-title', '改装快照'));
+    Object.entries(names).forEach(([key, label]) => ups.append(this.tag('li', '', `${label} ${record.upgrades[key as keyof RunRecord['upgrades']]}/3`)));
+    o.append(ups);
+    const back = this.tag('button', '', '返回列表'); back.onclick = () => this.records();
+    o.append(back);
+  }
+
   start(index: number) {
     this.missionIndex = index; this.save = this.store.load(); this.el.app.innerHTML=''; this.world = new GameWorld(this.el.app);
+    this.runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`; this.runStartedAt = Date.now(); this.runRecorded = false;
     this.ship = new Ship(structuredClone(this.save.upgrades)); this.weapons = new WeaponSystem(this.save.upgrades.weapon, this.save.upgrades.missile); this.targeting = new TargetingSystem(); this.missions = new MissionManager(index); this.events = new EventManager();
     if (this.practice) this.ship.repairMaterials = 8;
     this.enemies=[]; this.pickups=[]; this.scanned=0;this.nodes=0;this.towers=0;this.core=false;this.convoyHp=100;this.stationTime=75;this.finalTime=130;this.playerShip=this.world.makePlayerShip(); this.spawnContent(); this.missions.start(); this.show('game'); this.el.app.querySelector('canvas')?.requestPointerLock?.();
@@ -224,9 +309,13 @@ export class GameApp {
   }
 
   finish(success:boolean,reason:string) {
-    if(this.screen!=='game')return;
+    if(this.screen!=='game'||this.runRecorded)return;
+    this.runRecorded=true;
     const kills=this.enemies.filter(e=>!e.alive).length, reward=success?80+kills*20+this.missionIndex*40:25+kills*10;
     if(success){this.save.resources+=reward;this.save.points+=1+this.missionIndex;this.save.unlockedMission=Math.max(this.save.unlockedMission,Math.min(3,this.missionIndex+1));this.store.save(this.save);}
+    const record: RunRecord = { id: this.runId, missionIndex: this.missionIndex, missionName: MISSIONS[this.missionIndex].name, success, reason, startedAt: this.runStartedAt, finishedAt: Date.now(), duration: this.missions.state.time, kills, shots: this.weapons.shots, hits: this.weapons.hits, accuracy: this.weapons.accuracy, reward, upgrades: structuredClone(this.save.upgrades) };
+    const saved = this.store.appendRun(record);
+    this.save = { ...this.save, history: saved.history, schemaVersion: saved.schemaVersion };
     this.show('pause');
     this.el.overlay.innerHTML=`<h2 class="${success?'win':'lose'}">${success?'任务成功':'任务失败'}</h2><p>${reason}</p><ul><li>击毁数量：${kills}</li><li>命中率：${(this.weapons.accuracy*100).toFixed(0)}%</li><li>剩余护盾：${this.ship.shield.toFixed(0)}</li><li>用时：${this.missions.state.time.toFixed(1)} 秒</li><li>获得资源：${success?reward:reward}</li></ul><button data-a=restart>重新开始任务</button><button data-a=menu>返回主菜单</button>`;
     this.el.overlay.querySelector<HTMLElement>('[data-a=restart]')!.onclick=()=>this.start(this.missionIndex); this.el.overlay.querySelector<HTMLElement>('[data-a=menu]')!.onclick=()=>this.showMenu();
